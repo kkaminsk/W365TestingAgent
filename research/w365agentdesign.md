@@ -22,6 +22,10 @@ Claude Code operates from a development workstation or approved development envi
 
 
 
+\*\*Deployment topology decision (November 18, 2026):\*\* Claude Code runs on the Cloud PC itself rather than on a developer workstation. The Cloud PC is provisioned from the Windows 365 developer image, and Intune installs the remaining software (see section 8.3). The agent user's Microsoft Entra sign-in is the root credential for the session; Claude Code reaches Microsoft Foundry and Azure Key Vault with that sign-in, and only non-Entra services need stored secrets (see sections 6.4 and 6.5). Sections 4, 5, and 7 still describe the workstation-hosted variant and should be revised once the on-device browser control mechanism is decided (see section 18).
+
+
+
 The core workflow is:
 
 
@@ -320,19 +324,95 @@ Some agent Conditional Access capabilities are documented as preview; verify ten
 
 
 
-\### 6.4 Credential handling
+\### 6.4 Credential model
+
+
+
+The agent user's Entra sign-in is the root credential for everything Claude Code does on the Cloud PC. Services that accept Entra tokens are reached with that sign-in and need no stored secret. Only services that cannot accept Entra tokens need a stored secret, and those are fetched from Azure Key Vault at session start.
+
+
+
+| Consumer | Credential | Mechanism | Stored secret on device? |
+
+|---|---|---|---|
+
+| \*\*Claude Code model access\*\* | Agent user Entra token | Microsoft Foundry with Entra ID authentication. Claude Code uses the Azure default credential chain, so no API key is set. The agent user holds the Foundry User role on the Foundry resource. Model traffic stays inside the Azure tenant. | No |
+
+| \*\*Azure Key Vault\*\* | Agent user Entra token | Silent token acquisition through the Windows broker (WAM) using the operating system account. The agent user holds the Key Vault Secrets User role on a vault dedicated to that agent. | No |
+
+| \*\*Source control (Azure DevOps)\*\* | Agent user Entra token | Entra tokens are accepted directly by Azure DevOps. | No |
+
+| \*\*Source control (GitHub)\*\* | Short-lived GitHub App installation token | A small broker service mints an installation token on request. The token is written to a git credential helper, never to a file or environment variable the model can print. | No long-lived secret |
+
+| \*\*Linear\*\* | Linear API key for a dedicated bot identity | Stored in Key Vault, fetched at session start, and placed in the MCP server configuration so the model calls tools but never sees the key. | Yes, session-scoped |
+
+| \*\*Windows 365 Computer-Use MCP\*\* | Agent-user token for the `mcp_W365ComputerUse` audience | Obtained through the Agent 365 SDK or the optional bridge, as described in section 6.2. | No |
+
+
+
+Rules that apply regardless of mechanism:
 
 
 
 \- Do not place bearer tokens, passwords, client secrets, or session cookies in prompts, source control, screenshots, or test reports.
 
-\- Prefer supported managed identity, federation, or an approved secret store as applicable to the chosen integration.
-
-\- Keep token acquisition and refresh within the bridge or supported SDK, rather than exposing tokens to Claude Code as tool output.
+\- Keep token acquisition and refresh within the bridge, credential helper, or supported SDK, rather than exposing tokens to Claude Code as tool output. Anything in an environment variable or on disk under the agent user's profile is readable by the model through its shell tool.
 
 \- Rotate credentials according to organizational policy and revoke them when an agent is retired.
 
 \- Avoid storing a reusable authenticated browser profile as the foundation of the design.
+
+
+
+\### 6.5 Session-start secret provisioning
+
+
+
+There is no built-in tool that delivers Key Vault secrets to a Windows 365 Cloud PC at provisioning time, and provisioning time is the wrong moment in any case:
+
+
+
+\- The Azure Key Vault VM extension runs only on Azure VMs and Azure Arc-enabled servers and authenticates with a managed identity. Cloud PCs expose no managed identity.
+
+\- Azure Arc would add a managed identity, but Microsoft advises against Arc on ephemeral or VDI machines, and agent pool machines are reset after every session.
+
+\- Intune has no Key Vault integration for secrets, and its PowerShell script guidance states that scripts must not contain passwords or sensitive data. Intune can deliver the bootstrap script, but not the secret.
+
+\- Pool machines are provisioned once and checked out per task. Anything placed at provisioning time is shared across every agent that later uses the machine and persists in the image.
+
+
+
+The provisioning sequence is therefore:
+
+
+
+1\. Intune delivers the bootstrap script, Claude Code managed settings, and managed MCP configuration to the image. None of these contain secrets.
+
+2\. At session start, after the agent user is signed in, the bootstrap script runs under the agent user.
+
+3\. The script acquires a Key Vault token silently through the Windows broker using the operating system account.
+
+4\. The script fetches only the secrets listed in the inventory above and writes each into its credential helper or MCP server configuration.
+
+5\. The script sets the Microsoft Foundry environment variables (resource name and the enable flag) without any API key, so Claude Code falls through to the Azure default credential chain.
+
+6\. Claude Code starts. The session reset at checkin disposes of every fetched value.
+
+
+
+Conditional Access for the agent user must permit the Key Vault and Foundry audiences. Microsoft documents Conditional Access for agent identities as preview.
+
+
+
+\*\*Must be proven in the target tenant before this model is adopted:\*\*
+
+
+
+\- An Entra agent user can hold Azure RBAC role assignments (Key Vault Secrets User, Foundry User).
+
+\- Silent broker sign-in for the agent user works inside an agent session on the Cloud PC. Microsoft describes enterprise SSO within the session but does not document a Primary Refresh Token or broker behavior for agent users.
+
+\- Claude Code's Azure default credential chain finds the agent user's sign-in on the Cloud PC without an interactive prompt.
 
 
 
@@ -469,6 +549,42 @@ The Claude Code environment also needs access to the repository, build tools, se
 
 
 Prefer isolated preview environments when simultaneous work could cause one test run to overwrite another run’s deployment or data.
+
+
+
+\### 8.3 Device provisioning
+
+
+
+The Cloud PC pool is provisioned from the Windows 365 developer image. Intune installs the remaining software and configuration.
+
+
+
+| Delivered by | Content | Notes |
+
+|---|---|---|
+
+| \*\*Developer image\*\* | Base operating system and the developer tooling the image ships with. | Verify the actual image contents (for example Git, Node, VS Code) before assuming anything is present. |
+
+| \*\*Intune, Win32 or winget apps\*\* | Claude Code, MCP servers, helper tools. | Pin versions. Disable the Claude Code autoupdater through an environment variable so a mid-run update cannot change behavior. |
+
+| \*\*Intune, device configuration\*\* | Claude Code managed settings file in ProgramData (permission allowlist, hooks, managed MCP server definitions), git global configuration (user name, email, credential helper), bootstrap script. | Managed settings cannot be overridden by the model, which is the mechanism for unattended permission control. Contains no secrets. |
+
+| \*\*Session-start bootstrap\*\* | Secrets and short-lived tokens. | See section 6.5. Never delivered by Intune. |
+
+
+
+Constraints:
+
+
+
+\- \*\*Time to readiness.\*\* If the pool reprovisions from the image after every reset, every Intune app install runs again before the agent can start. Bake heavy software into a custom image and leave Intune for policy to keep readiness short. Section 15 monitors time to readiness, so this is a measurable constraint.
+
+\- \*\*Targeting.\*\* User-scoped Intune policy applies only if the agent user is licensed and targetable. Assume device-scoped targeting of the pool until the identity team confirms otherwise.
+
+\- \*\*Pool support.\*\* Confirm that Windows 365 for Agents pools accept custom images and full Intune management in the target tenant. Microsoft states that agent Cloud PCs are Entra-joined and Intune-enrolled; custom image support must be verified separately.
+
+\- \*\*Egress.\*\* In addition to the application endpoints in section 8.1, the Cloud PC must reach the Microsoft Foundry resource, Azure Key Vault, the source control host, and Linear.
 
 
 
@@ -978,6 +1094,16 @@ The solution is ready for an initial production-quality test workflow when:
 
 | \*\*Human checkpoints\*\* | Which test actions, deployments, and code changes require review under existing policy? |
 
+| \*\*On-device browser control\*\* | With Claude Code on the Cloud PC, does it drive Edge through the Windows 365 Computer-Use MCP, through a local browser automation tool, or both? This determines whether the Agent 365 token flow in section 6.2 is still required. |
+
+| \*\*Agent user Azure RBAC\*\* | Can an Entra agent user hold Key Vault Secrets User and Foundry User role assignments in the target tenant? |
+
+| \*\*Silent sign-in in session\*\* | Does Windows broker silent token acquisition work for the agent user inside an agent session, and does the Azure default credential chain pick it up? |
+
+| \*\*Source control host\*\* | Azure DevOps (Entra tokens, no secret) or GitHub (short-lived App installation tokens via a broker service)? |
+
+| \*\*Commit authorship\*\* | Does the agent commit under its own identity or the developer's, are commits signed, and may the agent push to protected branches? |
+
 
 
 \## 19. Primary references
@@ -999,4 +1125,16 @@ The solution is ready for an initial production-quality test workflow when:
 \- \[Windows 365 computer-use sample](https://learn.microsoft.com/en-us/samples/microsoft/agent365-samples/w365-computer-use-sample/)
 
 \- \[Claude Code browser integration](https://code.claude.com/docs/en/chrome)
+
+\- \[Claude Code on Microsoft Foundry](https://code.claude.com/docs/en/microsoft-foundry)
+
+\- \[Windows 365 for Agents identity security](https://learn.microsoft.com/en-us/windows-365/agents/identity-security)
+
+\- \[Windows 365 for Agents API overview](https://learn.microsoft.com/en-us/windows-365/agents/mcp-tool-overview)
+
+\- \[MSAL Windows broker (WAM)](https://learn.microsoft.com/en-us/entra/msal/dotnet/acquiring-tokens/desktop-mobile/wam)
+
+\- \[Azure Arc Connected Machine agent prerequisites](https://learn.microsoft.com/en-us/azure/azure-arc/servers/prerequisites)
+
+\- \[Intune PowerShell scripts on Windows devices](https://learn.microsoft.com/en-us/intune/device-management/tools/run-powershell-scripts-windows)
 
