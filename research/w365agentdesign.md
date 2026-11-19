@@ -336,9 +336,9 @@ The agent user's Entra sign-in is the root credential for everything Claude Code
 
 |---|---|---|---|
 
-| \*\*Claude Code model access\*\* | Agent user Entra token | Microsoft Foundry with Entra ID authentication. Claude Code uses the Azure default credential chain, so no API key is set. The Foundry User role is assigned to the agent identity, or to an Entra group the agent user belongs to. Microsoft documents Azure RBAC for agent identities but not for agent users, so this assignment path is untested. Model traffic stays inside the Azure tenant. | No |
+| \*\*Claude Code model access\*\* | Agent user Entra token | Microsoft Foundry with Entra ID authentication. Claude Code uses the Azure default credential chain when ANTHROPIC_FOUNDRY_API_KEY and ANTHROPIC_FOUNDRY_AUTH_TOKEN are unset. Microsoft's Foundry page describes this path as Azure CLI credentials, while Claude Code documents the full chain, and neither names managed or workload identity, so the agent-user sign-in must be proven as a source. The Foundry User or Cognitive Services User role is assigned to the agent identity, or to an Entra group the agent user belongs to. Microsoft documents Azure RBAC for agent identities but not for agent users, so this assignment path is untested. Model traffic stays inside the Azure tenant. | No |
 
-| \*\*Azure Key Vault\*\* | Agent user Entra token | Silent token acquisition through the Windows broker (WAM) using the operating system account. The Key Vault Secrets User role is assigned to the agent identity, or to an Entra group the agent user belongs to, on a vault dedicated to that agent. Microsoft documents Azure RBAC for agent identities but not for agent users, so this assignment path is untested. | No |
+| \*\*Azure Key Vault\*\* | Agent user Entra token | Silent token acquisition through the Windows broker (WAM) using the operating system account: MSAL with OperatingSystemAccount, or an Azure Identity library with its default broker account option and broker package. Silent success is not guaranteed and WAM falls back to an interactive prompt, so the bootstrap must fail closed. WAM requires an active interactive Windows user session and does not work from a service or scheduled task running under another account. The Key Vault Secrets User role is assigned to the agent identity, or to an Entra group the agent user belongs to, on a vault dedicated to that agent. Microsoft documents Azure RBAC for agent identities but not for agent users, so this assignment path is untested. | No |
 
 | \*\*Source control (Azure DevOps)\*\* | Agent user Entra token | Entra tokens are accepted directly by Azure DevOps. | No |
 
@@ -372,11 +372,11 @@ There is no built-in tool that delivers Key Vault secrets to a Windows 365 Cloud
 
 
 
-\- The Azure Key Vault VM extension runs only on Azure VMs and Azure Arc-enabled servers and authenticates with a managed identity. Cloud PCs expose no managed identity.
+\- The Azure Key Vault VM extension runs only on Azure VMs and Azure Arc-enabled servers and authenticates with a managed identity. It refreshes certificates into the certificate store rather than delivering arbitrary secrets such as API keys, and Microsoft lists only Windows Server 2022 and 2025 as supported, so Windows 11 Cloud PCs are not listed. Microsoft documents no assignable managed identity for Cloud PCs, although they must reach the Azure instance metadata endpoint. Treat the absence of an identity as undocumented rather than proven.
 
-\- Azure Arc would add a managed identity, but Microsoft advises against Arc on ephemeral or VDI machines, and agent pool machines are reset after every session.
+\- Azure Arc would add a system-assigned managed identity through a local endpoint, but agent pool machines are reset after every session, so each reset would need onboarding again. Microsoft's guidance against Arc on ephemeral or VDI machines was not verified in the fact-check and should be confirmed before it is cited.
 
-\- Intune has no Key Vault integration for secrets, and its PowerShell script guidance states that scripts must not contain passwords or sensitive data. Intune can deliver the bootstrap script, but not the secret.
+\- Intune has no Key Vault integration for secrets, and its PowerShell script guidance states that scripts must not contain passwords or sensitive data, and scripts are stored locally on the device. Intune can deliver the bootstrap script, but not the secret.
 
 \- Pool machines are provisioned once and checked out per task. Anything placed at provisioning time is shared across every agent that later uses the machine and persists in the image.
 
@@ -390,11 +390,11 @@ The provisioning sequence is therefore:
 
 2\. At session start, after the agent user is signed in, the bootstrap script runs under the agent user.
 
-3\. The script acquires a Key Vault token silently through the Windows broker using the operating system account.
+3\. The script acquires a Key Vault token silently through the Windows broker using the operating system account, inside the agent user's interactive session, and stops if the broker asks for interaction.
 
 4\. The script fetches only the secrets listed in the inventory above and writes each into its credential helper or MCP server configuration.
 
-5\. The script sets the Microsoft Foundry environment variables (resource name and the enable flag) without any API key, so Claude Code falls through to the Azure default credential chain.
+5\. The script sets the Microsoft Foundry environment variables (CLAUDE_CODE_USE_FOUNDRY, ANTHROPIC_FOUNDRY_RESOURCE as the bare resource name, and pinned model versions) without any API key or auth token, so Claude Code falls through to the Azure default credential chain.
 
 6\. Claude Code starts. The session reset at checkin disposes of every fetched value.
 
@@ -410,7 +410,7 @@ Conditional Access for the agent user must permit the Key Vault and Foundry audi
 
 \- Azure RBAC roles (Key Vault Secrets User, Foundry User) reach the agent user's token. Microsoft documents RBAC assignment for agent identities and states that blueprints cannot hold Azure RBAC roles, but says nothing about agent users. Prove either direct assignment to the agent user or assignment through an Entra group the agent user joins. Directory roles such as Global Administrator are blocked for agent identities and are not needed here.
 
-\- Silent broker sign-in for the agent user works inside an agent session on the Cloud PC. Microsoft describes enterprise SSO within the session but does not document a Primary Refresh Token or broker behavior for agent users.
+\- Silent broker sign-in for the agent user works inside an agent session on the Cloud PC. Microsoft describes enterprise SSO within the session but does not document a Primary Refresh Token or broker behavior for agent users, and the broker documentation says nothing about agent users, headless sessions, or Cloud PCs. A silent attempt can also fail and prompt interactively.
 
 \- Claude Code's Azure default credential chain finds the agent user's sign-in on the Cloud PC without an interactive prompt.
 
