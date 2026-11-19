@@ -274,7 +274,7 @@ The exact claims and identity subject visible to the application must be verifie
 
 3\. An authorized client obtains an agent-user token for the required audience.
 
-4\. The client calls the Agent 365 tooling gateway and starts a Cloud PC session.
+4\. The client calls the Agent 365 tooling gateway and starts a Cloud PC session. The server exposes StartSession, EndSession, and GetSessionDetails.
 
 5\. Tokens are refreshed as required for the duration of the run.
 
@@ -320,7 +320,7 @@ Microsoft describes enterprise SSO within the authenticated Cloud PC session. Wh
 
 
 
-Some agent Conditional Access capabilities are documented as preview; verify tenant availability and current licensing before relying on them. \[Microsoft: Conditional Access for agents](https://learn.microsoft.com/en-us/entra/identity/conditional-access/agent-id).
+Microsoft Entra Agent ID is generally available, but parts of Conditional Access for agents remain in preview: the "Agent execution environments" condition used for Cloud PC sessions, the "Agents" and "All agent users" targeting options, agent risk, and the block-high-risk-agents template. Policies must target agent users under Assignments > Agents, because policies scoped to ordinary users do not apply to them. Conditional Access is evaluated when Entra issues or refreshes tokens, with continuous access evaluation for some resources, rather than only once at session start. Licensing requires Microsoft 365 E7, or an Agent 365 license plus Microsoft Entra ID P1 or Microsoft 365 E3. Verify tenant availability before relying on any preview capability. \[Microsoft: Conditional Access for agents](https://learn.microsoft.com/en-us/entra/identity/conditional-access/agent-id).
 
 
 
@@ -336,9 +336,9 @@ The agent user's Entra sign-in is the root credential for everything Claude Code
 
 |---|---|---|---|
 
-| \*\*Claude Code model access\*\* | Agent user Entra token | Microsoft Foundry with Entra ID authentication. Claude Code uses the Azure default credential chain, so no API key is set. The agent user holds the Foundry User role on the Foundry resource. Model traffic stays inside the Azure tenant. | No |
+| \*\*Claude Code model access\*\* | Agent user Entra token | Microsoft Foundry with Entra ID authentication. Claude Code uses the Azure default credential chain, so no API key is set. The Foundry User role is assigned to the agent identity, or to an Entra group the agent user belongs to. Microsoft documents Azure RBAC for agent identities but not for agent users, so this assignment path is untested. Model traffic stays inside the Azure tenant. | No |
 
-| \*\*Azure Key Vault\*\* | Agent user Entra token | Silent token acquisition through the Windows broker (WAM) using the operating system account. The agent user holds the Key Vault Secrets User role on a vault dedicated to that agent. | No |
+| \*\*Azure Key Vault\*\* | Agent user Entra token | Silent token acquisition through the Windows broker (WAM) using the operating system account. The Key Vault Secrets User role is assigned to the agent identity, or to an Entra group the agent user belongs to, on a vault dedicated to that agent. Microsoft documents Azure RBAC for agent identities but not for agent users, so this assignment path is untested. | No |
 
 | \*\*Source control (Azure DevOps)\*\* | Agent user Entra token | Entra tokens are accepted directly by Azure DevOps. | No |
 
@@ -400,7 +400,7 @@ The provisioning sequence is therefore:
 
 
 
-Conditional Access for the agent user must permit the Key Vault and Foundry audiences. Microsoft documents Conditional Access for agent identities as preview.
+Conditional Access for the agent user must permit the Key Vault and Foundry audiences. Parts of Conditional Access for agents are preview, as described in section 6.3.
 
 
 
@@ -408,7 +408,7 @@ Conditional Access for the agent user must permit the Key Vault and Foundry audi
 
 
 
-\- An Entra agent user can hold Azure RBAC role assignments (Key Vault Secrets User, Foundry User).
+\- Azure RBAC roles (Key Vault Secrets User, Foundry User) reach the agent user's token. Microsoft documents RBAC assignment for agent identities and states that blueprints cannot hold Azure RBAC roles, but says nothing about agent users. Prove either direct assignment to the agent user or assignment through an Entra group the agent user joins. Directory roles such as Global Administrator are blocked for agent identities and are not needed here.
 
 \- Silent broker sign-in for the agent user works inside an agent session on the Cloud PC. Microsoft describes enterprise SSO within the session but does not document a Primary Refresh Token or broker behavior for agent users.
 
@@ -582,7 +582,7 @@ Constraints:
 
 \- \*\*Targeting.\*\* User-scoped Intune policy applies only if the agent user is licensed and targetable. Assume device-scoped targeting of the pool until the identity team confirms otherwise.
 
-\- \*\*Pool support.\*\* Confirm that Windows 365 for Agents pools accept custom images and full Intune management in the target tenant. Microsoft states that agent Cloud PCs are Entra-joined and Intune-enrolled; custom image support must be verified separately.
+\- \*\*Pool support.\*\* Confirm that Windows 365 for Agents pools accept custom images and full Intune management in the target tenant. Microsoft describes agent Cloud PCs as "domain-joined" and Intune-managed on a pool basis rather than per device. Do not read this as on-premises Active Directory join. Copilot Studio and other first-party agents create pools in their own portals without Intune setup, while the Agent 365 path uses a provisioning policy for agents. Custom image support must be verified separately.
 
 \- \*\*Egress.\*\* In addition to the application endpoints in section 8.1, the Cloud PC must reach the Microsoft Foundry resource, Azure Key Vault, the source control host, and Linear.
 
@@ -1096,7 +1096,7 @@ The solution is ready for an initial production-quality test workflow when:
 
 | \*\*On-device browser control\*\* | With Claude Code on the Cloud PC, does it drive Edge through the Windows 365 Computer-Use MCP, through a local browser automation tool, or both? This determines whether the Agent 365 token flow in section 6.2 is still required. |
 
-| \*\*Agent user Azure RBAC\*\* | Can an Entra agent user hold Key Vault Secrets User and Foundry User role assignments in the target tenant? |
+| \*\*Agent user Azure RBAC\*\* | Microsoft documents Azure RBAC for agent identities only. Should the roles go on the agent identity, on the agent user directly, or on an Entra group the agent user joins, and does the resulting agent-user token carry the access in the target tenant? |
 
 | \*\*Silent sign-in in session\*\* | Does Windows broker silent token acquisition work for the agent user inside an agent session, and does the Azure default credential chain pick it up? |
 
