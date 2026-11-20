@@ -4,7 +4,7 @@
 
 **Date:** November 20, 2026
 
-**Design revision reviewed:** `research/w365agentdesign.md`, working tree on branch `work/research-agent` as of November 20, 2026, after the GitHub Copilot CLI revision described in section D.
+**Design revision reviewed:** `research/w365agentdesign.md`, working tree on branch `work/research-agent` as of November 20, 2026, after the GitHub Copilot CLI revision described in section D and the fact-check corrections described in section E.
 
 **Reviewers:**
 
@@ -14,6 +14,7 @@
 | B | Windows developer | What actually runs on the Cloud PC: bootstrap, Windows broker, credential storage, git, Edge automation, hardening. |
 | C | GitHub Copilot CLI practitioner | How Copilot CLI is installed, authenticated, governed, and driven unattended. |
 | D | All | The changes made when the driver moved from Claude Code CLI to GitHub Copilot CLI. |
+| E | All | Results of the November 20, 2026 fact-check of the Copilot CLI claims in the design, and the edits it caused. |
 
 **How to use this document:** Each expert gets their section. Questions follow the design document's section order so the expert can be walked through the design top to bottom. Every question states the design section it tests, the question, why the answer matters, and the recommendation the design currently rests on. The expert's job is to confirm or overturn the recommendation. Record the answer under the question, then carry the decision into section 18 of the design document.
 
@@ -151,7 +152,7 @@ Question identifiers are `W-n` (Windows 365), `D-n` (Windows developer), and `C-
 - **Design section:** 8.3 (device configuration row), 6.5 (must be proven)
 - **Question:** Which Copilot CLI configuration is machine-wide (registry policy, `%ProgramFiles%` managed settings, ProgramData policy hooks) and which is per-user (`~/.copilot`)? Can the machine-wide files and keys be access-controlled so the model, running as the agent user, cannot rewrite its own permission policy?
 - **Why it matters:** Unattended permission control depends on the model being unable to loosen it. GitHub's documentation disagrees with itself on managed settings precedence.
-- **Recommendation to confirm:** Policy in `HKLM\SOFTWARE\Policies\GitHubCopilot` delivered by Intune, hooks in `C:\ProgramData\GitHub\Copilot\policy.d` with write access limited to administrators, and a Phase 2 test that attempts an override from the agent user's profile and confirms it is ignored.
+- **Recommendation to confirm:** Policy in `HKLM\SOFTWARE\Policies\GitHubCopilot` delivered by Intune, hooks in `C:\ProgramData\GitHub\Copilot\policy.d` with write access limited to administrators, and a Phase 2 test that attempts an override from the agent user's profile and confirms it is ignored. GitHub's configuration reference says only deny rules, `disableBypassPermissionsMode`, and the sandbox floor are enforced against user settings, so put hard limits in those keys.
 
 ### D-7. Driving Edge on the box
 
@@ -195,52 +196,45 @@ Question identifiers are `W-n` (Windows 365), `D-n` (Windows developer), and `C-
 ### C-1. Which GitHub credential the CLI should use
 
 - **Design section:** 1 (driver decision), 6.1 (GitHub identity row), 6.4 (Copilot CLI model access row), 18 (Copilot credential)
-- **Question:** The design prefers a GitHub App installation token carrying "Copilot Requests: read", minted by the same broker that mints source-control tokens. GitHub documents this token type for the Copilot SDK and for Actions, not for the standalone CLI. Have you seen the standalone CLI accept an installation token through `COPILOT_GITHUB_TOKEN`? Does your organization allow Copilot requests from App installations billed to the organization? If not, is a fine-grained PAT from a dedicated Enterprise Managed User account acceptable?
+- **Question:** The design prefers a GitHub App installation token carrying "Copilot Requests: read", minted by the same broker that mints source-control tokens. The fact-check found it documented for the Copilot SDK and in GitHub's usage-based billing page, which says an installed App can make Copilot requests without a user signing in, billed to the organization. The CLI authentication page lists only `gho_`, `ghu_`, and fine-grained personal access tokens, and the Actions page documents only the built-in `GITHUB_TOKEN`. Have you seen the standalone CLI accept a `ghs_` installation token through `COPILOT_GITHUB_TOKEN`? Does your organization allow Copilot requests from App installations (the SDK page notes a 403 otherwise)? If not, is a fine-grained PAT from a dedicated Enterprise Managed User account acceptable, given that it must be personally owned?
 - **Why it matters:** The App token gives a one-hour credential with no human seat. The PAT is documented but long-lived and tied to a person-shaped account. The answer decides whether a stored secret exists at all.
 - **Recommendation to confirm:** Prove the App token in Phase 2. Fall back to the PAT in Key Vault only if the CLI rejects the installation token.
-
 ### C-2. Who pays and how spend is capped
 
 - **Design section:** 6.4, 13 (controls), 15 (cost considerations)
-- **Question:** With an App token, requests are billed to the organization as AI credits. With a PAT, they draw on that account's seat. Which does your organization prefer, what is a sensible `--max-ai-credits` per run, and have you seen runaway spend from autopilot loops?
-- **Why it matters:** The fix-and-retest loop is open-ended. Without a cap, a stuck run can consume credits until the session is evicted.
-- **Recommendation to confirm:** Organization billing through the App token, a per-run credit cap set from Phase 2 measurements, and no autopilot until the loop is understood.
-
+- **Question:** With an App token, requests are billed to the organization as AI credits. With a PAT, they draw on that account's seat. GitHub's billing page says no per-app or per-installation budget can be created for App-token usage. Which billing path does your organization prefer, does the CLI expose a per-run credit cap (the design's `--max-ai-credits` was not confirmed in the programmatic documentation), and have you seen runaway spend from autopilot loops?
+- **Why it matters:** The fix-and-retest loop is open-ended. Without a cap on the run, a stuck run can consume credits until the session is evicted.
+- **Recommendation to confirm:** Organization billing through the App token, a per-run cap confirmed against the installed version and set from Phase 2 measurements, organization budgets as the backstop, and no autopilot until the loop is understood.
 ### C-3. Token placement on a shared box
 
 - **Design section:** 6.4 (rules), 6.5 (step 5)
-- **Question:** The design stores the token in Windows Credential Manager under the `copilot-cli` service name and avoids `COPILOT_GITHUB_TOKEN` because an environment variable overrides the stored credential and the model can print it. Is that how you handle tokens on machines where the agent runs unattended? Does the CLI pick up a Credential Manager entry written by another process?
-- **Why it matters:** If the CLI only reads credentials it wrote itself, the bootstrap must use the `--with-token` sign-in instead.
-- **Recommendation to confirm:** Bootstrap writes the token with `copilot login --with-token` from a pipe, never from a file or an environment variable that outlives the call.
-
+- **Question:** The design lets the CLI write its own credential with `copilot login --with-token` instead of writing Credential Manager by hand, and avoids `COPILOT_GITHUB_TOKEN` because an environment variable silently overrides the stored credential and the model can print it. GitHub documents `copilot-cli` as the default keychain service name and Credential Manager as the Windows store, but not the Windows target name, and a non-official source reports a `copilot-cli/<host>` variant. `--with-token` is in the command reference but not on the authentication page. Does `--with-token` accept an installation token, or only `gho_`, `ghu_`, and fine-grained PATs? Note that `/logout` does not revoke the token on GitHub. What do you use on unattended shared machines?
+- **Why it matters:** If the CLI rejects installation tokens at login, the primary credential path must use an environment variable scoped to one process, or the PAT fallback.
+- **Recommendation to confirm:** The bootstrap pipes the token to `copilot login --with-token`, never from a file or an environment variable that outlives the call. If that fails for installation tokens, set `COPILOT_GITHUB_TOKEN` only in the environment of the single child process that runs the CLI.
 ### C-4. The exact unattended invocation
 
 - **Design section:** 6.5 (step 6), 9
-- **Question:** Write down the command line you would use: `-p` with the objective, `--output-format json`, `--no-ask-user`, specific `--allow-tool` and `--deny-tool` patterns, `--allow-url` scope, `--max-ai-credits`, and whether `--autopilot` with `--max-autopilot-continues` has a place. How do you detect completion versus interruption given exit codes are undocumented?
-- **Why it matters:** The wrapper in D-8 is built around this command and its output.
-- **Recommendation to confirm:** No autopilot initially. JSON output parsed by the wrapper. Any non-zero exit is blocked. Tool allow patterns limited to `shell(git:*)`, the build and test commands of the target repository, and the named MCP servers.
-
+- **Question:** Write down the command line you would use. The fact-check confirmed `-p`, `--no-ask-user`, `--output-format json` (JSON lines), `--allow-tool`, `--deny-tool`, and `--allow-all` or `--yolo` (which expand to allow-all-tools, allow-all-paths, and allow-all-urls), and that unattended runs deny any request that is not pre-approved. It did not confirm `--autopilot`, `--max-autopilot-continues`, or `--max-ai-credits` on the programmatic pages. Exit codes are documented only for `copilot workflow run` (0, 1, 2, 130), not for `-p`. There is also `--assisted-approval`, a model-based safety review. Which flags exist in the installed version, and how do you detect completion versus interruption?
+- **Why it matters:** The wrapper in D-8 is built around this command and its output, and any undocumented flag is a version risk.
+- **Recommendation to confirm:** No autopilot initially. JSON output parsed by the wrapper. Any non-zero exit is blocked. Tool allow patterns limited to `shell(git:*)`, the build and test commands of the target repository, and the named MCP servers. Check every flag against `copilot --help` of the pinned version.
 ### C-5. Where MCP servers are defined and how remote OAuth works
 
 - **Design section:** 6.5 (step 1), 7 (Option A), 8.3
-- **Question:** For machine-wide MCP definitions (Playwright, Linear, optionally the Windows 365 Computer-Use server), would you use `--additional-mcp-config` from the bootstrap, the user `mcp-config.json`, or `.github/mcp.json` in the repository? Have you used the CLI's OAuth settings (client ID, scopes, client-credentials grant) against a remote MCP server, and did token refresh work across a long session?
-- **Why it matters:** Option A's viability depends on the CLI completing the Agent 365 OAuth flow. The config location decides whether the repository can inject servers.
-- **Recommendation to confirm:** `--additional-mcp-config` pointing at a file in ProgramData so the repository cannot add servers, with the enterprise MCP allowlist as the backstop.
-
+- **Question:** The fact-check confirmed user config in `~/.copilot/mcp-config.json`, project config in `.mcp.json` (which takes precedence over `.github/mcp.json`), and three transports: local stdio, streamable HTTP, and legacy SSE. `--additional-mcp-config` appears in the January 14, 2026 changelog. Project-level servers load only after folder trust is confirmed on first launch. For machine-wide definitions (Playwright, Linear, optionally the Windows 365 Computer-Use server), which location would you use? How do you pre-confirm folder trust for an unattended run? Have you used the CLI's OAuth settings (client ID, scopes, client-credentials grant) against a remote MCP server? That part was not confirmed, and token refresh across a long session is unknown.
+- **Why it matters:** Option A's viability depends on the CLI completing the Agent 365 OAuth flow. The config location decides whether the repository can inject servers, and an unanswered trust prompt stalls the run.
+- **Recommendation to confirm:** `--additional-mcp-config` pointing at a file in ProgramData so the repository cannot add servers, the working folder trusted ahead of time, and the enterprise MCP allowlist as a backstop only if it reaches the agent (see C-7).
 ### C-6. Install and pinning behaviour
 
 - **Design section:** 8.3
-- **Question:** On a managed image, winget or npm? Have you seen the behaviour where a newer cached version runs instead of the installed one, and does `COPILOT_AUTO_UPDATE=false` stop it? Does the CLI need Node.js when installed through winget?
+- **Question:** The fact-check confirmed the winget package `GitHub.Copilot` and npm `@github/copilot` with Node.js 22 or later, that package-manager installs auto-update by default, and that the command reference lists `COPILOT_AUTO_UPDATE` and `--no-auto-update`. A report that a newer cached version can run instead of the installed one rests on a secondary release note for 1.0.85 and is unconfirmed. Have you seen that behaviour, and does `COPILOT_AUTO_UPDATE=false` stop it? Does `copilot update` need to be disabled as well?
 - **Why it matters:** A version change between the image build and the run breaks reproducibility of the run record.
-- **Recommendation to confirm:** winget with an explicit version, `COPILOT_AUTO_UPDATE=false` machine-wide, version recorded in every run record.
-
+- **Recommendation to confirm:** winget with an explicit version, `COPILOT_AUTO_UPDATE=false` machine-wide, version recorded in every run record, and a Phase 2 test that a newer release on the feed does not change the running version.
 ### C-7. Managed settings: which source wins
 
 - **Design section:** 6.5 (must be proven), 8.3 (device configuration row), 18 (Copilot governance gaps)
-- **Question:** GitHub's deployment guide says MDM policy beats server-managed settings, which beat the `%ProgramFiles%` file, which beats user settings. The configuration directory reference says users can override most managed keys. Which have you observed? Is `permissions.disableBypassPermissionsMode` honoured when the user passes `--yolo`? Does the MCP allowlist apply to the CLI in your organization, given the About page says the CLI does not support the organization MCP policies and the administration page says it does?
-- **Why it matters:** Unattended permission control depends on managed settings winning.
-- **Recommendation to confirm:** Registry policy from Intune as the single source, tested in Phase 2 by attempting overrides from the agent user's profile and the command line.
-
+- **Question:** GitHub's deployment guide says the highest channel wins outright (MDM, then server-managed, then the `%ProgramFiles%` file). The configuration directory reference says MDM settings are a baseline below user, repository, local, environment, and command-line settings, with only these enforced: `permissions.disableBypassPermissionsMode`, the sandbox floor, `sandbox.failIfUnavailable`, and managed plugin entries. The managed settings reference adds that a managed deny rule from any source blocks the operation for every user, and that managed `telemetry.*` values override environment variables. Which have you observed? Can a user setting or environment variable override the managed `model`? Is `disableBypassPermissionsMode` honoured when the user passes `--yolo`? The MCP question is resolved: the August 6, 2026 changelog says allowlists are generally available and enforced on the CLI, so the About page is stale. But GitHub says server-managed settings are resolved from the signed-in GitHub account. If the agent uses an App installation token, does it receive the allowlist at all?
+- **Why it matters:** Unattended permission control depends on managed settings winning, and the primary credential path may have no signed-in account to resolve them from.
+- **Recommendation to confirm:** Hard limits only in keys documented as enforced (deny rules, `disableBypassPermissionsMode`, sandbox floor) delivered by registry policy from Intune. Control MCP servers through the machine-wide configuration file in C-5 and do not rely on the server-managed allowlist for the App-token path until a test shows it applies.
 ### C-8. Hooks that fail open
 
 - **Design section:** 8.3 (hooks fail open), 13 (controls), 18 (Hook fail-open)
@@ -312,11 +306,11 @@ The original design, written and fact-checked on November 18, 2026, assumed Clau
 | 6.1 Identity inventory | Developer identity "runs Claude Code" | "runs Copilot CLI interactively"; new row "GitHub identity for the agent" (App installation preferred, or dedicated Enterprise Managed User with a Copilot seat) | Model access needs a GitHub identity. |
 | 6.2 Boundary A | "Claude Code to Windows 365 computer-use tools" | "Copilot CLI to Windows 365 computer-use tools" | Word swap. |
 | 6.4 Credential model, intro | Entra sign-in is the root credential for everything the agent does | Entra sign-in is the root credential for Azure-side services; model inference is the exception and needs a GitHub credential | Copilot CLI cannot use an Entra token headlessly. |
-| 6.4 Model access row | "Claude Code model access": Microsoft Foundry with Entra ID, Azure default credential chain, Foundry User role, no stored secret, traffic stays inside the tenant | "Copilot CLI model access": GitHub token; primary is a one-hour App installation token with "Copilot Requests: read" minted by the existing broker (undocumented for the standalone CLI, must be proven); fallback is a fine-grained PAT of a dedicated EMU account held in Key Vault (documented, long-lived); watch item is the Entra sign-in preview of November 17, 2026 (interactive only); BYOK to Foundry rejected because it needs an API key and is outside enterprise policy; traffic leaves the tenant | Driver changed; Foundry path replaced. |
+| 6.4 Model access row | "Claude Code model access": Microsoft Foundry with Entra ID, Azure default credential chain, Foundry User role, no stored secret, traffic stays inside the tenant | "Copilot CLI model access": GitHub token; primary is a one-hour App installation token with "Copilot Requests: read" minted by the existing broker (undocumented for the standalone CLI, must be proven); fallback is a fine-grained PAT of a dedicated EMU account held in Key Vault (documented, long-lived); watch item is the Entra sign-in preview of November 17, 2026 (an interactive `/login` option; no headless flow documented); BYOK to Foundry rejected because it needs an API key and is outside enterprise policy; traffic leaves the tenant | Driver changed; Foundry path replaced. |
 | 6.4 GitHub source control row | Separate broker mints installation tokens for git | Same broker and App serve both model access and git | One mechanism instead of two. |
-| 6.4 Rules | "exposing tokens to Claude Code as tool output" | "to the agent"; added that `COPILOT_GITHUB_TOKEN` in the environment overrides the stored credential and is readable by the model, so the bootstrap stores the token in Windows Credential Manager under service `copilot-cli` | Copilot CLI credential-resolution behaviour. |
+| 6.4 Rules | "exposing tokens to Claude Code as tool output" | "to the agent"; added that `COPILOT_GITHUB_TOKEN` in the environment overrides the stored credential and is readable by the model, so the bootstrap lets `copilot login --with-token` store the token in Windows Credential Manager | Copilot CLI credential-resolution behaviour. |
 | 6.5 Provisioning step 1 | Intune delivers Claude Code managed settings and managed MCP configuration | Intune delivers Copilot CLI managed settings (registry policy under `HKLM\SOFTWARE\Policies\GitHubCopilot` or `%ProgramFiles%\GitHubCopilot\managed-settings.json`), policy hooks under `C:\ProgramData\GitHub\Copilot\policy.d`, and machine-wide MCP configuration | Copilot CLI's managed-settings mechanism. |
-| 6.5 Provisioning step 5 | Set Foundry environment variables without an API key so Claude Code falls through to the Azure default credential chain | Obtain the GitHub token from the broker or Key Vault, store it in Credential Manager, set `COPILOT_AUTO_UPDATE=false`, pin `COPILOT_MODEL`, do not export the token | Foundry path replaced. |
+| 6.5 Provisioning step 5 | Set Foundry environment variables without an API key so Claude Code falls through to the Azure default credential chain | Obtain the GitHub token from the broker or Key Vault, pass it to `copilot login --with-token`, set `COPILOT_AUTO_UPDATE=false`, pin `COPILOT_MODEL`, do not export the token | Foundry path replaced. |
 | 6.5 Provisioning step 6 | "Claude Code starts" | "Copilot CLI starts in non-interactive prompt mode" | Word swap plus mode. |
 | 6.5 Conditional Access line | Must permit Key Vault and Foundry audiences | Must permit Key Vault and Azure DevOps audiences | Foundry removed. |
 | 6.5 Must be proven | Three items: RBAC on agent user, silent broker sign-in, Azure default credential chain finds the sign-in | Five items: RBAC on agent user (Key Vault only), silent broker sign-in, standalone CLI accepts an App installation token, Copilot CLI client enabled and App requests allowed for the organization, managed settings precedence behaves as documented | Credential chain item removed; Copilot items added. |
@@ -343,11 +337,60 @@ The original design, written and fact-checked on November 18, 2026, assumed Clau
 | 19 References | Included Claude Code browser integration, Claude Code on Microsoft Foundry, Microsoft Claude Agent SDK quickstart | Those three removed; fifteen GitHub Copilot CLI and SDK references added (documentation pages and dated changelog entries) | Driver changed. |
 | Whole file | 185 lines began with literal backslash escapes (`\#`, `\*\*`, `\-`, `\|`) and the mermaid block was unreadable; every paragraph was separated by two blank lines | Plain markdown, single blank lines, readable mermaid | Formatting fix only; no content change. |
 
-**Claims in the revised design that rest on inference rather than documentation, and must be proven in Phase 2:**
+**Claims in the revised design that rest on inference rather than documentation, and must be proven in Phase 2 (updated after the fact-check in section E):**
 
-1. The standalone Copilot CLI accepts a GitHub App installation token that carries "Copilot Requests: read". GitHub documents this for the SDK and Actions only.
-2. Managed settings delivered by registry policy take precedence over user settings on the device. GitHub's two documentation pages disagree.
-3. The enterprise MCP allowlist applies to the CLI. GitHub's two documentation pages disagree.
-4. A Credential Manager entry written by the bootstrap is picked up by the CLI without an interactive sign-in.
+1. The standalone Copilot CLI accepts a GitHub App installation token that carries "Copilot Requests: read". The CLI authentication page does not list it, and the SDK and billing pages do not say it works with the CLI.
+2. Managed settings enforce what the design needs on the device. GitHub's two pages conflict, and only deny rules, `disableBypassPermissionsMode`, and the sandbox floor are documented as enforced against user settings.
+3. Server-managed settings, including the MCP allowlist, reach an agent that has no signed-in GitHub account. This is an inference.
+4. `copilot login --with-token` accepts an installation token, and the credential it stores is read back by the CLI without an interactive sign-in.
+
+The earlier fourth item about the MCP allowlist is resolved: the August 6, 2026 changelog says it is enforced on the CLI.
 
 **Memory and process notes:** the earlier credential-model decision recorded on November 18, 2026 ("Claude Code uses Microsoft Foundry with Entra ID auth") is superseded by this revision. Everything else in that decision stands.
+
+---
+
+## Section E: Fact-check of the Copilot CLI claims (November 20, 2026)
+
+**Method:** An automated research workflow fetched 22 sources (docs.github.com pages and GitHub changelog entries), extracted 104 claims, and put each through adversarial verification. Two verifiers refuted a claim as worded, and both are reflected below. The workflow's own summary merged only 11 findings and dropped several claim groups, so the table below also draws on the per-claim record it kept.
+
+**Limits:** Nearly every docs.github.com page is undated, so currency is "as fetched on November 20, 2026". Only the changelog entries carry dates. Most checks were a single fetch with no contradiction search, and no behavior was tested on a device. Several claims could not be checked against a page that was too long to read in full.
+
+| Claim in the design | Result | Source | Edit made |
+|---|---|---|---|
+| winget `GitHub.Copilot`, npm `@github/copilot`, Node.js 22 or later | Verified | Install page; January 14, 2026 changelog | None |
+| Token variable order `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN`; a variable overrides the stored token | Verified on four pages | Authentication, install, command reference, and SDK pages | None |
+| `gho_`, `ghu_`, fine-grained `github_pat_` with Copilot Requests, personally owned; classic `ghp_` rejected | Verified. New detail: with `-p` the CLI refuses to start on a classic PAT alone | Authentication and troubleshooting pages | Design 6.4 |
+| Token stored under service `copilot-cli` in Credential Manager | Partly verified. `copilot-cli` is the documented default service name and Credential Manager the Windows store. The Windows target name is not documented | Authentication and troubleshooting pages | Design 6.4, 6.5; C-3 |
+| `copilot login --with-token` reads stdin | In the command reference, absent from the authentication page | Command reference | Design 6.4, 6.5; C-3 |
+| App installation token works with the standalone CLI | **Unverified.** Not in the CLI authentication page, which lists no `ghs_` token | Authentication, SDK server-to-server, and Actions pages | Design 6.4, 6.5, 18; C-1 |
+| Installation tokens last one hour and bill the organization | Verified. New detail: no per-app or per-installation budget can be created | SDK server-to-server and billing pages | Design 6.4; C-2 |
+| Actions path uses an installation token | **Corrected.** The documented path is the built-in `GITHUB_TOKEN` with `copilot-requests: write` | Actions page; July 2, 2026 changelog | Design 6.4, 13 |
+| Entra sign-in: public preview November 17, 2026, Windows and macOS, CLI 1.0.113 or later | Verified. The claim that EMU with OIDC is required was refuted as incomplete: a second route uses Microsoft 365 Copilot licences for Frontier organizations | November 17, 2026 changelog; authentication page | Design 6.4 |
+| Entra sign-in is "interactive only, no headless flow" | **Unverifiable.** No source states it either way | November 17, 2026 changelog | Design 6.4; section D; memory |
+| `COPILOT_AUTO_UPDATE` and `--no-auto-update` | Listed in the command reference, not on the install page | Command reference | Design 8.3; C-6 |
+| A newer cached version can run instead of the installed one | Unconfirmed. Secondary release note only | None primary | Design 8.3; C-6 |
+| Registry key `HKLM\SOFTWARE\Policies\GitHubCopilot` and file `%ProgramFiles%\GitHubCopilot\managed-settings.json` | Verified. The file must be root-owned, not world-writable, and not a symlink | Deploy managed settings page; July 8, 2026 changelog | None |
+| Precedence: MDM, then server-managed, then file, then user | **Conflict confirmed.** The deployment guide says the highest channel wins outright. The configuration reference says MDM is a baseline below user, repository, environment, and command-line settings | Deploy page; configuration directory reference | Design 6.5, 8.3, 18; C-7 |
+| Managed keys: permission rules, `disableBypassPermissionsMode`, `model`, `telemetry.*` | Verified in the managed settings reference. The July 8 changelog does not list the permission rules or MCP keys for the MDM channel | Managed settings reference; July 8, 2026 changelog | Design 8.3 |
+| MCP allowlist GA August 6, 2026, enforced on the CLI | Verified. Settles the About page contradiction in favor of enforcement. Keys come from `.github-private` server-managed settings; allowed lists intersect, denied lists union, first-party servers cannot be blocked | August 6, 2026 changelog; managed settings reference | Design 18; C-7 |
+| Server-managed settings reach an App-token agent | Documented as resolved from the signed-in account; the consequence for an App token is an inference | Deploy managed settings page | Design 6.5; C-7 |
+| Hook paths under `policy.d` and the registry, and timeouts fail open | Not re-verified | Earlier single research pass | Design 8.3 note |
+| `-p`, `--no-ask-user`, `--output-format json`, `--allow-tool`, `--deny-tool`, `--yolo` | Verified. Unapproved requests are denied in `-p` mode | Programmatic documentation; command reference | None |
+| `--autopilot`, `--max-autopilot-continues`, `--max-ai-credits` | Not confirmed on the programmatic pages | Programmatic documentation | Design 13; C-2, C-4 |
+| Exit codes | Documented only for `copilot workflow run` (0, 1, 2, 130), not for `-p` | Programmatic reference | C-4 |
+| MCP config paths and transports | Verified: `~/.copilot/mcp-config.json`, `.mcp.json`, `.github/mcp.json`; stdio, streamable HTTP, SSE. Project servers load only after folder trust | Add MCP servers page | Design 7; C-5 |
+| MCP OAuth fields including client credentials; `--additional-mcp-config` | OAuth not confirmed. The flag appears in a changelog | January 14, 2026 changelog | Design 1, 7; C-5 |
+| Copilot SDK GA June 2, 2026 in six languages, same engine | Verified for date and languages. "Same engine" softened to "same agent runtime" | June 2, 2026 changelog | Design 7 |
+| Logs in `~/.copilot/logs`, sessions in `session-state/<id>/events.jsonl` | Verified paths. Session sync and telemetry limits not re-verified | Configuration directory reference | Design 12.2 |
+| BYOK variables, and BYOK outside enterprise policy | Legacy `COPILOT_PROVIDER_*` variables apply only when `providers.json` declares no providers, and keys there are plain text. Policy claim not re-verified | Configuration directory reference | Design 6.4 |
+| Usage-based AI credit billing from June 1, 2026 | Verified | GitHub billing blog post | None |
+| `gh copilot` extension retired | Not re-verified in this run | Earlier single research pass | None |
+| Official guidance for unattended, service account, VDI, or Windows 365 use | None found. The SDK page names service accounts for the SDK, and the Actions page warns that running the CLI in a workflow step gives it broad environment access | Several | Design 13 |
+
+**New facts worth acting on:**
+
+- `--assisted-approval` provides a model-based safety review that can approve eligible requests without blanket permissions. It is not used in the design.
+- `GITHUB_ASKPASS` can point at an executable that returns a token for CI. It is a different mechanism from the token variables and was not evaluated.
+- Package-manager installs auto-update by default, so the update control in the design is required, not optional.
+- Copilot CLI minimum client version for usage-based billing is 1.0.48, so the pinned version must be at least that.
